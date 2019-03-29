@@ -12,15 +12,15 @@ package io.pravega.perf;
 
 import io.pravega.client.ClientConfig;
 import io.pravega.client.ClientFactory;
-import io.pravega.client.stream.ReaderGroup;
-import io.pravega.client.stream.ReinitializationRequiredException;
 import io.pravega.client.stream.impl.ControllerImpl;
 import io.pravega.client.stream.impl.ControllerImplConfig;
 import io.pravega.client.stream.impl.ClientFactoryImpl;
 
+import io.pravega.common.hash.RandomFactory;
 import java.io.IOException;
 import java.time.Instant;
 
+import java.util.concurrent.CompletableFuture;
 import org.apache.commons.cli.BasicParser;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -45,15 +45,21 @@ import java.util.stream.IntStream;
  */
 public class PravegaPerfTest {
 
+    private final static String SEGMENTSTORE_BENCHMARK = "segmentstore";
+    private final static String CONTROLLER_BENCHMARK = "controller";
+    private final static String CONTROLLER_CSV_SUFFIX = "controller.csv";
+
+    private static String benchmarkType = CONTROLLER_BENCHMARK;
     private static String controllerUri = "tcp://localhost:9090";
     private static int messageSize = 100;
     private static String streamName = StartLocalService.STREAM_NAME;
     private static String scopeName = StartLocalService.SCOPE;
     private static boolean recreate = false;
-    private static int producerCount = 0;
+    private static int producerCount = 1;
     private static int consumerCount = 0;
     private static int segmentCount = 0;
     private static int events = 3000;
+    private static int controllerEvents = 100;
     private static boolean isRandomKey = false;
     private static int transactionPerCommit = 0;
     private static int runtimeSec = 0;
@@ -67,13 +73,6 @@ public class PravegaPerfTest {
     private static String readFile = null;
 
     public static void main(String[] args) {
-        ReaderGroup readerGroup = null;
-        final int timeout = 10;
-        final ClientFactory factory;
-        ControllerImpl controller = null;
-
-        final List<Callable<Void>> readers;
-        final List<Callable<Void>> writers;
 
         try {
             parseCmdLine(args);
@@ -81,6 +80,24 @@ public class PravegaPerfTest {
             p.printStackTrace();
             System.exit(1);
         }
+
+        if (benchmarkType.equals(SEGMENTSTORE_BENCHMARK)) {
+            executeSegmentStoreBenchmark();
+        } else {
+            executeControllerBenchmark();
+        }
+
+        System.exit(0);
+    }
+
+    private static void executeSegmentStoreBenchmark() {
+        final int timeout = 10;
+        final ClientFactory factory;
+        ControllerImpl controller;
+
+        final List<Callable<Void>> readers;
+        final List<Callable<Void>> writers;
+
         if (producerCount == 0 && consumerCount == 0) {
             System.out.println("Error: Must specify the number of producers or Consumers");
             System.exit(1);
@@ -92,9 +109,9 @@ public class PravegaPerfTest {
         try {
 
             controller = new ControllerImpl(ControllerImplConfig.builder()
-                    .clientConfig(ClientConfig.builder()
-                            .controllerURI(new URI(controllerUri)).build())
-                    .maxBackoffMillis(5000).build(),
+                                                                .clientConfig(ClientConfig.builder()
+                                                                                          .controllerURI(new URI(controllerUri)).build())
+                                                                .maxBackoffMillis(5000).build(),
                     bgexecutor);
 
             PravegaStreamHandler streamHandle = new PravegaStreamHandler(scopeName, streamName, controllerUri,
@@ -113,14 +130,14 @@ public class PravegaPerfTest {
             final Instant StartTime = Instant.now();
 
             if (consumerCount > 0) {
-                readerGroup = streamHandle.createReaderGroup();
+                streamHandle.createReaderGroup();
                 consumeStats = new PerfStats("Reading", reportingInterval, messageSize, consumerCount * events * (runtimeSec + 1), readFile);
                 readers = IntStream.range(0, consumerCount)
-                        .boxed()
-                        .map(i -> new PravegaReaderWorker(i, events,
-                                runtimeSec, StartTime, consumeStats,
-                                streamName, timeout, factory))
-                        .collect(Collectors.toList());
+                                   .boxed()
+                                   .map(i -> new PravegaReaderWorker(i, events,
+                                           runtimeSec, StartTime, consumeStats,
+                                           streamName, timeout, factory))
+                                   .collect(Collectors.toList());
             } else {
                 readers = null;
                 consumeStats = null;
@@ -137,23 +154,23 @@ public class PravegaPerfTest {
 
                 if (transactionPerCommit > 0) {
                     writers = IntStream.range(0, producerCount)
-                            .boxed()
-                            .map(i -> new PravegaTransactionWriterWorker(i, events,
-                                    runtimeSec, isRandomKey,
-                                    messageSize, StartTime,
-                                    produceStats, streamName,
-                                    tput, factory,
-                                    transactionPerCommit))
-                            .collect(Collectors.toList());
+                                       .boxed()
+                                       .map(i -> new PravegaTransactionWriterWorker(i, events,
+                                               runtimeSec, isRandomKey,
+                                               messageSize, StartTime,
+                                               produceStats, streamName,
+                                               tput, factory,
+                                               transactionPerCommit))
+                                       .collect(Collectors.toList());
                 } else {
                     writers = IntStream.range(0, producerCount)
-                            .boxed()
-                            .map(i -> new PravegaWriterWorker(i, events,
-                                    runtimeSec, isRandomKey,
-                                    messageSize, StartTime,
-                                    produceStats, streamName,
-                                    tput, factory))
-                            .collect(Collectors.toList());
+                                       .boxed()
+                                       .map(i -> new PravegaWriterWorker(i, events,
+                                               runtimeSec, isRandomKey,
+                                               messageSize, StartTime,
+                                               produceStats, streamName,
+                                               tput, factory))
+                                       .collect(Collectors.toList());
                 }
             } else {
                 writers = null;
@@ -161,9 +178,9 @@ public class PravegaPerfTest {
             }
 
             final List<Callable<Void>> workers = Stream.of(readers, writers)
-                    .filter(x -> x != null)
-                    .flatMap(x -> x.stream())
-                    .collect(Collectors.toList());
+                                                       .filter(x -> x != null)
+                                                       .flatMap(x -> x.stream())
+                                                       .collect(Collectors.toList());
 
             Runtime.getRuntime().addShutdownHook(new Thread() {
                 public void run() {
@@ -181,8 +198,86 @@ public class PravegaPerfTest {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
 
-        System.exit(0);
+    private static void executeControllerBenchmark() {
+        if (producerCount == 0) {
+            System.out.println("Error: Must specify the number of producers");
+            System.exit(1);
+        }
+
+        try {
+            // Create Scopes
+            bgexecutor = Executors.newScheduledThreadPool(producerCount);
+            final String randomPrefix = String.valueOf(RandomFactory.create().nextInt());
+            final PravegaControllerWorker controllerWorker = new PravegaControllerWorker(URI.create(controllerUri), controllerEvents / producerCount, segmentCount);
+            final PerfStats createScopeStats = new PerfStats("CreateScope", reportingInterval, 0,
+                    producerCount * controllerEvents, "createscope-" + CONTROLLER_CSV_SUFFIX);
+            List<CompletableFuture<Void>> createScopeTasks = IntStream.range(0, producerCount)
+                                                                      .boxed()
+                                                                      .map(i -> controllerWorker.new CreateScopesTask(i, createScopeStats, randomPrefix))
+                                                                      .map(task -> CompletableFuture.runAsync(task, bgexecutor))
+                                                                      .collect(Collectors.toList());
+            createScopeTasks.forEach(CompletableFuture::join);
+            createScopeStats.printTotal(Instant.now());
+
+            // Create Streams
+            final PerfStats createStreamStats = new PerfStats("CreateStream", reportingInterval, 0,
+                    producerCount * controllerEvents, "createstream-" + CONTROLLER_CSV_SUFFIX);
+            List<CompletableFuture<Void>> createStreamTasks = IntStream.range(0, producerCount)
+                                                                       .boxed()
+                                                                       .map(i -> controllerWorker.new CreateStreamTask(i, createStreamStats, randomPrefix))
+                                                                       .map(task -> CompletableFuture.runAsync(task, bgexecutor))
+                                                                       .collect(Collectors.toList());
+            createStreamTasks.forEach(CompletableFuture::join);
+            createStreamStats.printTotal(Instant.now());
+
+            // Update Streams
+            final PerfStats updateStreamStats = new PerfStats("UpdateStream", reportingInterval, 0,
+                    producerCount * controllerEvents, "updatestream-" + CONTROLLER_CSV_SUFFIX);
+            List<CompletableFuture<Void>> updateStreamTasks = IntStream.range(0, producerCount)
+                                                                       .boxed()
+                                                                       .map(i -> controllerWorker.new UpdateStreamTask(i, updateStreamStats, randomPrefix))
+                                                                       .map(task -> CompletableFuture.runAsync(task, bgexecutor))
+                                                                       .collect(Collectors.toList());
+            updateStreamTasks.forEach(CompletableFuture::join);
+            updateStreamStats.printTotal(Instant.now());
+
+            // Seal Streams
+            final PerfStats sealStreamStats = new PerfStats("SealStream", reportingInterval, 0,
+                    producerCount * controllerEvents, "sealstream-" + CONTROLLER_CSV_SUFFIX);
+            List<CompletableFuture<Void>> sealStreamTasks = IntStream.range(0, producerCount)
+                                                                       .boxed()
+                                                                       .map(i -> controllerWorker.new SealStreamTask(i, sealStreamStats, randomPrefix))
+                                                                       .map(task -> CompletableFuture.runAsync(task, bgexecutor))
+                                                                       .collect(Collectors.toList());
+            sealStreamTasks.forEach(CompletableFuture::join);
+            sealStreamStats.printTotal(Instant.now());
+
+            // Delete Streams
+            final PerfStats deleteStreamStats = new PerfStats("DeleteStream", reportingInterval, 0,
+                    producerCount * controllerEvents, "deletestream-" + CONTROLLER_CSV_SUFFIX);
+            List<CompletableFuture<Void>> deleteStreamTasks = IntStream.range(0, producerCount)
+                                                                     .boxed()
+                                                                     .map(i -> controllerWorker.new DeleteStreamTask(i, deleteStreamStats, randomPrefix))
+                                                                     .map(task -> CompletableFuture.runAsync(task, bgexecutor))
+                                                                     .collect(Collectors.toList());
+            deleteStreamTasks.forEach(CompletableFuture::join);
+            deleteStreamStats.printTotal(Instant.now());
+
+            // Delete Scopes
+            final PerfStats deleteScopeStats = new PerfStats("DeleteScope", reportingInterval, 0,
+                    producerCount * controllerEvents, "deletescope-" + CONTROLLER_CSV_SUFFIX);
+            List<CompletableFuture<Void>> deleteScopeTasks = IntStream.range(0, producerCount)
+                                                                       .boxed()
+                                                                       .map(i -> controllerWorker.new DeleteScopesTask(i, deleteScopeStats, randomPrefix))
+                                                                       .map(task -> CompletableFuture.runAsync(task, bgexecutor))
+                                                                       .collect(Collectors.toList());
+            deleteScopeTasks.forEach(CompletableFuture::join);
+            deleteScopeStats.printTotal(Instant.now());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private static synchronized void shutdown() throws InterruptedException, IOException {
@@ -208,6 +303,7 @@ public class PravegaPerfTest {
         final CommandLineParser parser;
         final CommandLine commandline;
 
+        options.addOption("type", true, "Execute 'controller' (metadata) or 'segmentstore' (IO) benchmark");
         options.addOption("controller", true, "controller URI");
         options.addOption("producers", true, "number of producers");
         options.addOption("consumers", true, "number of consumers");
@@ -215,6 +311,7 @@ public class PravegaPerfTest {
                 "number of events/records per producer/consumer if 'time' not specified;\n" +
                         "otherwise, maximum events per second by producer(s)" +
                         "and/or number of events per consumer");
+        options.addOption("controllerevents", true, "Number of metadata operation of each type to be executed");
         options.addOption("time", true, "number of seconds the code runs");
         options.addOption("transaction", true, "Producers use transactions or not");
         options.addOption("size", true, "Size of each message (event or record)");
@@ -246,39 +343,13 @@ public class PravegaPerfTest {
             System.exit(0);
         } else {
 
+            // Common parameters to be parsed for both Segment Store and Controller benchmarks.
             if (commandline.hasOption("controller")) {
                 controllerUri = commandline.getOptionValue("controller");
             }
+
             if (commandline.hasOption("producers")) {
                 producerCount = Integer.parseInt(commandline.getOptionValue("producers"));
-            }
-
-            if (commandline.hasOption("consumers")) {
-                consumerCount = Integer.parseInt(commandline.getOptionValue("consumers"));
-            }
-
-            if (commandline.hasOption("events")) {
-                events = Integer.parseInt(commandline.getOptionValue("events"));
-            }
-
-            if (commandline.hasOption("time")) {
-                runtimeSec = Integer.parseInt(commandline.getOptionValue("time"));
-            }
-
-            if (commandline.hasOption("size")) {
-                messageSize = Integer.parseInt(commandline.getOptionValue("size"));
-            }
-
-            if (commandline.hasOption("stream")) {
-                streamName = commandline.getOptionValue("stream");
-            }
-
-            if (commandline.hasOption("randomkey")) {
-                isRandomKey = Boolean.parseBoolean(commandline.getOptionValue("randomkey"));
-            }
-
-            if (commandline.hasOption("transactionspercommit")) {
-                transactionPerCommit = Integer.parseInt(commandline.getOptionValue("transactionspercommit"));
             }
 
             if (commandline.hasOption("segments")) {
@@ -287,19 +358,65 @@ public class PravegaPerfTest {
                 segmentCount = producerCount;
             }
 
-            if (commandline.hasOption("recreate")) {
-                recreate = Boolean.parseBoolean(commandline.getOptionValue("recreate"));
+            if (commandline.hasOption("type") && commandline.getOptionValue("type").equals(CONTROLLER_BENCHMARK)) {
+                benchmarkType = CONTROLLER_BENCHMARK;
+                parseControllerBenchmarkOptions(commandline);
+            } else {
+                parseSegmentStoreBenchmarkOptions(commandline);
             }
+        }
+    }
 
-            if (commandline.hasOption("throughput")) {
-                throughput = Double.parseDouble(commandline.getOptionValue("throughput"));
-            }
-            if (commandline.hasOption("writecsv")) {
-                writeFile = commandline.getOptionValue("writecsv");
-            }
-            if (commandline.hasOption("readcsv")) {
-                readFile = commandline.getOptionValue("readcsv");
-            }
+    private static void parseControllerBenchmarkOptions(CommandLine commandLine) {
+        if (commandLine.hasOption("controllerevents")) {
+            controllerEvents = Integer.parseInt(commandLine.getOptionValue("controllerevents"));
+        }
+    }
+
+    private static void parseSegmentStoreBenchmarkOptions(CommandLine commandLine) {
+
+        if (commandLine.hasOption("consumers")) {
+            consumerCount = Integer.parseInt(commandLine.getOptionValue("consumers"));
+        }
+
+        if (commandLine.hasOption("events")) {
+            events = Integer.parseInt(commandLine.getOptionValue("events"));
+        }
+
+        if (commandLine.hasOption("time")) {
+            runtimeSec = Integer.parseInt(commandLine.getOptionValue("time"));
+        }
+
+        if (commandLine.hasOption("size")) {
+            messageSize = Integer.parseInt(commandLine.getOptionValue("size"));
+        }
+
+        if (commandLine.hasOption("stream")) {
+            streamName = commandLine.getOptionValue("stream");
+        }
+
+        if (commandLine.hasOption("randomkey")) {
+            isRandomKey = Boolean.parseBoolean(commandLine.getOptionValue("randomkey"));
+        }
+
+        if (commandLine.hasOption("transactionspercommit")) {
+            transactionPerCommit = Integer.parseInt(commandLine.getOptionValue("transactionspercommit"));
+        }
+
+        if (commandLine.hasOption("recreate")) {
+            recreate = Boolean.parseBoolean(commandLine.getOptionValue("recreate"));
+        }
+
+        if (commandLine.hasOption("throughput")) {
+            throughput = Double.parseDouble(commandLine.getOptionValue("throughput"));
+        }
+
+        if (commandLine.hasOption("writecsv")) {
+            writeFile = commandLine.getOptionValue("writecsv");
+        }
+
+        if (commandLine.hasOption("readcsv")) {
+            readFile = commandLine.getOptionValue("readcsv");
         }
     }
 
