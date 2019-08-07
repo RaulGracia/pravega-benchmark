@@ -34,7 +34,7 @@ public class PravegaWriterWorker extends WriterWorker {
 
         this.producer = factory.createEventWriter(streamName,
                 new UTF8StringSerializer(),
-                EventWriterConfig.builder().build());
+                EventWriterConfig.builder().enableConnectionPooling(false).build());
     }
 
     @Override
